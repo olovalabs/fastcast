@@ -19,7 +19,7 @@ use unicode_segmentation::*;
 
 actions!(
     fastcast_input,
-    [Backspace, Delete, Left, Right, Home, End, MoveUp, MoveDown, Confirm, Clear]
+    [Backspace, Delete, Left, Right, Home, End, MoveUp, MoveDown, Confirm, Clear, RemoveSelected, RevealSelected]
 );
 
 pub struct Editor {
