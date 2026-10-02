@@ -1,10 +1,12 @@
+mod input;
+
 use gpui::{
-    Animation, AnimationExt as _, App, Bounds, Context, FocusHandle, KeyDownEvent, Render, Window,
-    WindowBounds, WindowOptions, div, prelude::*, px, rgba, size,
+    App, Bounds, Context, CursorStyle, Entity, KeyBinding, Render, Window, WindowBounds,
+    WindowOptions, div, prelude::*, px, rgba, size,
 };
 use gpui_platform::application;
+use input::{Clear, Confirm, Editor, MoveDown, MoveUp};
 use std::path::PathBuf;
-use std::time::Duration;
 
 #[derive(Clone)]
 struct DesktopApp {
@@ -253,63 +255,88 @@ fn launch(app: &DesktopApp) {
 }
 
 struct Fastcast {
-    query: String,
     selected: usize,
     apps: Vec<DesktopApp>,
-    focus_handle: FocusHandle,
+    editor: Entity<Editor>,
+    _subscriptions: Vec<gpui::Subscription>,
 }
 
 impl Fastcast {
-    fn results(&self) -> Vec<&DesktopApp> {
-        if self.query.is_empty() {
+    fn query(&self, cx: &App) -> String {
+        self.editor.read(cx).text(cx)
+    }
+
+    fn results(&self, cx: &App) -> Vec<&DesktopApp> {
+        let query = self.query(cx);
+        if query.is_empty() {
             return self.apps.iter().take(8).collect();
         }
         self.apps
             .iter()
-            .filter(|app| matches(app, &self.query))
+            .filter(|app| matches(app, &query))
             .take(10)
             .collect()
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        match event.keystroke.key.as_str() {
-            "backspace" => {
-                self.query.pop();
-                self.selected = 0;
-            }
-            "escape" => self.query.clear(),
-            "up" => self.selected = self.selected.saturating_sub(1),
-            "down" => {
-                let max = self.results().len().saturating_sub(1);
-                self.selected = (self.selected + 1).min(max);
-            }
-            "enter" => {
-                let results = self.results();
-                if let Some(app) = results.get(self.selected) {
-                    let app = (*app).clone();
-                    launch(&app);
-                }
-            }
-            _ => {
-                if let Some(ch) = &event.keystroke.key_char {
-                    self.query.push_str(ch);
-                    self.selected = 0;
-                }
-            }
-        }
+    fn move_up(&mut self, cx: &mut Context<Self>) {
+        self.selected = self.selected.saturating_sub(1);
         cx.notify();
+    }
+
+    fn move_down(&mut self, cx: &mut Context<Self>) {
+        let max = self.results(cx).len().saturating_sub(1);
+        self.selected = (self.selected + 1).min(max);
+        cx.notify();
+    }
+
+    fn confirm(&mut self, cx: &mut Context<Self>) {
+        let results = self.results(cx);
+        if let Some(app) = results.get(self.selected) {
+            launch(app);
+        }
+    }
+
+    fn clear_search(&mut self, cx: &mut Context<Self>) {
+        self.selected = 0;
+        self.editor.update(cx, |editor, cx| editor.clear(cx));
     }
 }
 
 impl Render for Fastcast {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let results = self.results();
+        let query = self.query(cx);
+        let results = self.results(cx);
         let selected = self.selected;
+        let editor = self.editor.clone();
+        let view = cx.entity();
 
         div()
             .id("fastcast")
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
+            .key_context("Fastcast")
+            .on_action({
+                let view = view.clone();
+                move |_: &MoveUp, _: &mut Window, cx: &mut App| {
+                    view.update(cx, |this, cx| this.move_up(cx))
+                }
+            })
+            .on_action({
+                let view = view.clone();
+                move |_: &MoveDown, _: &mut Window, cx: &mut App| {
+                    view.update(cx, |this, cx| this.move_down(cx))
+                }
+            })
+            .on_action({
+                let view = view.clone();
+                move |_: &Confirm, _: &mut Window, cx: &mut App| {
+                    view.update(cx, |this, cx| this.confirm(cx))
+                }
+            })
+            .on_action({
+                let view = view.clone();
+                move |_: &Clear, _: &mut Window, cx: &mut App| {
+                    view.update(cx, |this, cx| this.clear_search(cx))
+                }
+            })
             .flex()
             .flex_col()
             .size_full()
@@ -327,46 +354,20 @@ impl Render for Fastcast {
                     .py_4()
                     .border_b_1()
                     .border_color(rgba(0xffffff1f))
-                    .text_color(rgba(0xffffffd0))
-                    .text_lg()
-                    .when(self.query.is_empty(), |s| {
-                        s.child(
-                            div()
-                                .w(px(2.0))
-                                .h(px(20.0))
-                                .mr_2()
-                                .bg(rgba(0xffffffd0))
-                                .with_animation(
-                                    "cursor_blink_empty",
-                                    Animation::new(Duration::from_millis(800)).repeat(),
-                                    |caret, delta| {
-                                        caret.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
-                                    },
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_color(rgba(0xffffff70))
-                                .child("Search for apps and commands..."),
-                        )
-                    })
-                    .when(!self.query.is_empty(), |s| {
-                        s.child(div().child(self.query.clone())).child(
-                            div()
-                                .w(px(2.0))
-                                .h(px(20.0))
-                                .ml_0p5()
-                                .bg(rgba(0xffffffd0))
-                                .with_animation(
-                                    "cursor_blink",
-                                    Animation::new(Duration::from_millis(800)).repeat(),
-                                    |caret, delta| {
-                                        caret.opacity(if delta < 0.5 { 1.0 } else { 0.0 })
-                                    },
-                                ),
-                        )
-                    })
-                    .child(div().flex_1()),
+                    .child(
+                        div()
+                            .id("search")
+                            .key_context("SearchInput")
+                            .track_focus(&editor.read(cx).focus_handle)
+                            .cursor(CursorStyle::IBeam)
+                            .map(input::standard_actions(editor.clone()))
+                            .flex()
+                            .flex_1()
+                            .items_center()
+                            .text_color(rgba(0xffffffd0))
+                            .text_lg()
+                            .child(editor.clone()),
+                    ),
             )
             .child(
                 div().flex_1().flex().flex_col().gap_1().py_2().children(
@@ -414,7 +415,7 @@ impl Render for Fastcast {
                                         .into_any_element(),
                                 })
                                 .child(div().text_color(rgba(0xffffffff)).child(app.name.clone()))
-                                .when_some(best_keyword(app, &self.query).map(|k| k.to_string()), |s, kw| {
+                                .when_some(best_keyword(app, &query).map(|k| k.to_string()), |s, kw| {
                                     s.child(div().text_color(rgba(0xffffff80)).child(kw))
                                 })
                                 .child(div().flex_1())
@@ -468,6 +469,18 @@ impl Render for Fastcast {
 
 fn main() {
     application().run(|cx: &mut App| {
+        cx.bind_keys([
+            KeyBinding::new("backspace", input::Backspace, Some("SearchInput")),
+            KeyBinding::new("delete", input::Delete, Some("SearchInput")),
+            KeyBinding::new("left", input::Left, Some("SearchInput")),
+            KeyBinding::new("right", input::Right, Some("SearchInput")),
+            KeyBinding::new("home", input::Home, Some("SearchInput")),
+            KeyBinding::new("end", input::End, Some("SearchInput")),
+            KeyBinding::new("up", MoveUp, Some("Fastcast")),
+            KeyBinding::new("down", MoveDown, Some("Fastcast")),
+            KeyBinding::new("enter", Confirm, Some("Fastcast")),
+            KeyBinding::new("escape", Clear, Some("Fastcast")),
+        ]);
         let bounds = Bounds::centered(None, size(px(750.0), px(620.0)), cx);
         cx.open_window(
             WindowOptions {
@@ -482,13 +495,22 @@ fn main() {
             },
             |window, cx| {
                 cx.new(|cx| {
-                    let focus_handle = cx.focus_handle();
-                    focus_handle.focus(window, cx);
+                    let editor = cx.new(|cx| Editor::new("", window, cx));
+                    let focus = editor.read(cx).focus_handle.clone();
+                    focus.focus(window, cx);
+                    let value = editor.read(cx).value();
+                    let editor_sub = cx.observe(&editor, |_: &mut Fastcast, _, cx| {
+                        cx.notify();
+                    });
+                    let value_sub = cx.observe(&value, |this: &mut Fastcast, _, cx| {
+                        this.selected = 0;
+                        cx.notify();
+                    });
                     Fastcast {
-                        query: String::new(),
                         selected: 0,
                         apps: load_apps(),
-                        focus_handle,
+                        editor,
+                        _subscriptions: vec![editor_sub, value_sub],
                     }
                 })
             },
